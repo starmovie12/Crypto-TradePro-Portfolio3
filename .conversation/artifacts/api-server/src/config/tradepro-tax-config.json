@@ -1,0 +1,8 @@
+{
+  "feeRate": 0.001,
+  "vdaTaxRate": 0.3,
+  "tdsRate": 0.01,
+  "feeSource": "config fallback",
+  "taxSource": "India VDA estimate defaults",
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+}

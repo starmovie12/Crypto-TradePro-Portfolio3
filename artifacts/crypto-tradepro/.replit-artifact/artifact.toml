@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Crypto TradePro"
+description = "A paper-trading dashboard for monitoring live INR option prices, bracket orders, portfolio P&L, and persisted trade history."
+version = "1.0.0"
+id = "artifacts/crypto-tradepro"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/", "/api/ws/market", "/api/ws/portfolio" ]
+localPort = 18925
+
+[services.development]
+run = "pnpm --filter @workspace/crypto-tradepro run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/crypto-tradepro", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/crypto-tradepro/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18925"
+BASE_PATH = "/"

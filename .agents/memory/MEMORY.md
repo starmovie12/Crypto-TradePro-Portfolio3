@@ -1,0 +1,1 @@
+- [Realtime trading proxy](realtime-trading-proxy.md) — WebSocket endpoints must be explicitly allowlisted in both the API and web artifact routing manifests.
