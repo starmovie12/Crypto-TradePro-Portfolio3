@@ -63,11 +63,31 @@ export async function refreshCurrencyRate(force = false) {
   return snapshot;
 }
 
-export function refreshFeeRate(force = false) {
+/**
+ * Section 5.3 requires the fee rate to come from `ccxt`'s live fee endpoint
+ * for the connected account, not a hardcoded percentage. There is currently
+ * no exchange connection (Section 7/5.4 — no `ccxt` client exists yet in
+ * this backend), so there is nothing to fetch from. This function is the
+ * single place a real `ccxt` fee-rate fetch should be wired in later; until
+ * then it deliberately returns `undefined` rather than pretending to have
+ * fetched something, so callers can tell "no exchange yet" apart from "asked
+ * and got a rate back."
+ */
+async function fetchLiveFeeRate(): Promise<number | undefined> {
+  return undefined;
+}
+
+export async function refreshFeeRate(force = false) {
   const age = Date.now() - new Date(snapshot.feeFetchedAt).getTime();
-  if (force || age > feeTtlMs) {
-    snapshot = { ...snapshot, feeFetchedAt: new Date().toISOString(), feeSource: "fallback" };
-  }
+  if (!force && age <= feeTtlMs) return snapshot;
+  const liveRate = await fetchLiveFeeRate();
+  snapshot =
+    liveRate !== undefined
+      ? { ...snapshot, feeRate: liveRate, feeFetchedAt: new Date().toISOString(), feeSource: "exchange" }
+      : // No exchange connected: refresh the timestamp so assertFreshFeeRate
+        // (Section 9.4) doesn't treat the fallback as endlessly stale, but
+        // keep reporting it honestly as a fallback, not "exchange."
+        { ...snapshot, feeFetchedAt: new Date().toISOString(), feeSource: "fallback" };
   return snapshot;
 }
 
