@@ -10,7 +10,7 @@ const router: IRouter = Router();
 
 router.get("/config/trading", async (_req, res) => {
   await refreshCurrencyRate();
-  refreshFeeRate();
+  await refreshFeeRate();
   res.json(GetTradingConfigResponse.parse(getTradingConfig()));
 });
 
