@@ -19,6 +19,7 @@
     "useUnknownInCatchVariables": true,
     "alwaysStrict": true,
     "skipLibCheck": true,
+    "esModuleInterop": true,
     "target": "es2022",
     "types": [],
     "customConditions": ["workspace"]
