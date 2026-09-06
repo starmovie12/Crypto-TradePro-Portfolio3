@@ -15,8 +15,11 @@ import {
 } from "@workspace/api-zod";
 import { getMarketOverview, getOptionChain } from "../services/market-feed";
 import { getTradingConfig, refreshCurrencyRate, refreshFeeRate } from "../services/trading-config-store";
-import { calculateTradeCosts } from "../services/fee-tax-config";
 import { loadTradeHistory, saveTradeHistory } from "../services/trade-history-store";
+import {
+  settlePosition as accountingSettlePosition,
+  type AccountingWallet,
+} from "../services/portfolio-accounting";
 
 type Position = {
   id: string;
@@ -58,14 +61,16 @@ type ClosedTrade = {
 };
 
 const router: IRouter = Router();
+
 // wallet.balance = settled paper funds (deposits + realized P&L from closed
 // trades), not yet reduced by capital locked in open positions.
 // wallet.marginUsed = capital currently committed to open positions
 // (entryPrice * quantity * 100 per position, summed).
 // availableBalance shown to the UI is always wallet.balance - wallet.marginUsed.
-const wallet = {
+const wallet: AccountingWallet = {
   balance: 250_000,
   marginUsed: 205 * 0.02 * 100 * 1.001, // entry notional plus the configured entry fee
+  realizedPnl: 0,
 };
 
 const positions: Position[] = [
@@ -105,7 +110,6 @@ const activity: Activity[] = [
 
 const history: ClosedTrade[] = loadTradeHistory();
 const idempotentOrders = new Map<string, Position>();
-let realizedPnl = 0;
 
 function availableBalance() {
   return Math.max(0, wallet.balance - wallet.marginUsed);
@@ -116,33 +120,40 @@ function openPositions() {
 }
 
 function settlePosition(position: Position, status: "closed" | "target-hit" | "stop-hit" = "closed") {
-  const marginForPosition = position.entryPrice * position.quantity * 100;
   const config = getTradingConfig();
-  const costs = calculateTradeCosts({
-    entryPrice: position.entryPrice,
-    exitPrice: position.livePrice,
-    quantity: position.quantity,
+  const result = accountingSettlePosition({
+    position,
+    wallet,
+    status,
     contractMultiplier: 100,
-    feeRate: {
-      rate: config.feeRate,
-      source: config.feeSource,
-      fetchedAt: config.feeFetchedAt,
-      staleAfterMs: 5 * 60 * 1000,
-    },
-    taxConfig: {
-      vdaTaxRate: config.vdaTaxRate,
-      tdsRate: config.tdsRate,
-      updatedAt: config.taxUpdatedAt,
-      source: config.taxSource,
+    config: {
+      feeRate: {
+        rate: config.feeRate,
+        source: config.feeSource,
+        fetchedAt: config.feeFetchedAt,
+        staleAfterMs: 5 * 60 * 1000,
+      },
+      taxConfig: {
+        vdaTaxRate: config.vdaTaxRate,
+        tdsRate: config.tdsRate,
+        updatedAt: config.taxUpdatedAt,
+        source: config.taxSource,
+      },
     },
   });
+  if (!result.ok) {
+    throw new Error(`Settlement config incomplete: ${result.missingKeys.join(", ")}`);
+  }
+  const { costs } = result;
+  
   // Open P&L becomes settled balance only after an exit is confirmed.
   // The realized balance is net of both exchange legs; tax remains an
   // informational estimate and is not treated as an exchange deduction.
-  realizedPnl += costs.netPnlBeforeTax;
-  wallet.balance += costs.netPnlBeforeTax;
-  wallet.marginUsed = Math.max(0, wallet.marginUsed - marginForPosition - costs.entryFee);
+  wallet.balance = result.wallet.balance;
+  wallet.marginUsed = result.wallet.marginUsed;
+  wallet.realizedPnl = result.wallet.realizedPnl;
   position.status = status;
+  
   history.unshift({
     id: `history-${position.id}-${Date.now()}`,
     instrument: position.instrument,
@@ -172,7 +183,7 @@ function portfolioSnapshot(closeFailures: Array<{ id: string; instrument: string
     availableBalance: Number(availableBalance().toFixed(2)),
     totalPnl: Number(currentPositions.reduce((sum, position) => sum + position.pnl, 0).toFixed(2)),
     totalPortfolioValue: Number((availableBalance() + marketValue).toFixed(2)),
-    realizedPnl: Number(realizedPnl.toFixed(2)),
+    realizedPnl: Number(wallet.realizedPnl.toFixed(2)),
     positions: currentPositions,
     activity,
     history,
@@ -181,6 +192,13 @@ function portfolioSnapshot(closeFailures: Array<{ id: string; instrument: string
 }
 
 export function refreshPaperQuotes(chain = getOptionChain()) {
+  // This runs on every WebSocket tick (see trading-websocket.ts), not just on
+  // an HTTP request, so it cannot rely on a route handler having refreshed
+  // the fee rate first. Without this, a bracket firing after >5 minutes of
+  // no API traffic hits calculateTradeCosts' stale-rate guard and throws
+  // inside a bare setInterval callback, which crashes the whole process.
+  refreshFeeRate();
+  
   const settledPositions: Position[] = [];
   positions.forEach((position) => {
     if (position.status !== "open") return;
@@ -193,18 +211,28 @@ export function refreshPaperQuotes(chain = getOptionChain()) {
     );
     const hitTarget = position.livePrice >= position.targetPrice;
     const hitStop = position.livePrice <= position.stopPrice;
+    
     if (hitTarget || hitStop) {
       const status = hitTarget ? "target-hit" : "stop-hit";
-      settlePosition(position, status);
-      activity.unshift({
-        id: `${status}-${position.id}-${Date.now()}`,
-        type: hitTarget ? "Paper target filled" : "Paper stop filled",
-        instrument: position.instrument,
-        price: position.livePrice,
-        quantity: position.quantity,
-        timestamp: new Date().toISOString(),
-      });
-      settledPositions.push({ ...position });
+      try {
+        // Isolated per position: one bad settlement (e.g. a config edge case)
+        // must not abort the loop and silently skip marking every other open
+        // position for this tick, and must not throw back into the shared
+        // setInterval in trading-websocket.ts and take the process down.
+        settlePosition(position, status);
+        activity.unshift({
+          id: `${status}-${position.id}-${Date.now()}`,
+          type: hitTarget ? "Paper target filled" : "Paper stop filled",
+          instrument: position.instrument,
+          price: position.livePrice,
+          quantity: position.quantity,
+          timestamp: new Date().toISOString(),
+        });
+        settledPositions.push({ ...position });
+      } catch {
+        // Left open; the same target/stop condition is re-evaluated (and
+        // settlement retried) on the next tick 350ms later.
+      }
     }
   });
   return settledPositions;
@@ -243,6 +271,7 @@ router.post("/portfolio/positions/:id/close", (req, res) => {
     res.status(409).json({ error: "Position already closed" });
     return;
   }
+  
   // Realize this position's P&L into the settled balance and release its margin.
   settlePosition(position);
   const closed = {
@@ -266,6 +295,7 @@ router.post("/portfolio/close-all", (_req, res) => {
   refreshFeeRate();
   const now = new Date().toISOString();
   const closeFailures: Array<{ id: string; instrument: string; reason: string }> = [];
+  
   positions.forEach((position) => {
     if (position.status === "open") {
       try {
@@ -360,14 +390,17 @@ router.post("/orders/paper", (req, res) => {
   const orderCost = body.entryPrice * body.quantity * 100;
   const entryFee = orderCost * config.feeRate;
   const available = wallet.balance - wallet.marginUsed;
+  
   if (orderCost + entryFee > available) {
     res.status(422).json({ error: "Insufficient available balance for this order" });
     return;
   }
+  
   wallet.marginUsed += orderCost + entryFee;
   const targetPrice = Number((body.entryPrice * (1 + body.targetPercent / 100)).toFixed(2));
   const stopPrice = Number((body.entryPrice * (1 - body.stopPercent / 100)).toFixed(2));
-  const position = {
+  
+  const position: Position = {
     id: `pos-${Date.now()}`,
     instrument: body.instrument,
     side: body.side,
@@ -378,10 +411,12 @@ router.post("/orders/paper", (req, res) => {
     pnlPercent: 0,
     targetPrice,
     stopPrice,
-    status: "open" as const,
+    status: "open",
   };
+  
   positions.unshift(position);
   if (clientOrderId) idempotentOrders.set(clientOrderId, position);
+  
   activity.unshift({
     id: `act-${Date.now()}`,
     type: "Paper buy",
@@ -390,6 +425,7 @@ router.post("/orders/paper", (req, res) => {
     quantity: body.quantity,
     timestamp: new Date().toISOString(),
   });
+  
   res.status(201).json(CreatePaperOrderResponse.parse(position));
 });
 
