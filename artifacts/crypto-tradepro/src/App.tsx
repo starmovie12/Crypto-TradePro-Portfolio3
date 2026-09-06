@@ -6,7 +6,7 @@ import {
   Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, Bot, BriefcaseBusiness,
   Check, ChevronRight, CircleHelp, Clock3, Crosshair, ExternalLink,
   Gauge, IndianRupee, LayoutGrid, LineChart, LockKeyhole, Menu, MoreHorizontal,
-  Plus, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Target,
+  Plus, Radio, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Target,
   TrendingUp, X, Zap,
 } from 'lucide-react';
 import {
@@ -20,7 +20,9 @@ import type {
   AdvisorRecommendation, ClosedTrade, MarketOverview, OptionChainRow, PaperOrderInput, Portfolio, Position,
 } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
+import { BotSignalsTab } from '@/components/bot-dashboard/bot-signals-tab';
 import { useMarketLive } from '@/hooks/use-market-live';
+import { useCurrencyConverter } from '@/hooks/use-currency-converter';
 import { usePortfolioLive } from '@/hooks/use-portfolio-live';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -166,7 +168,7 @@ function Header({ onMenu, isPaper, setIsPaper }: { onMenu: () => void; isPaper: 
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const health = useHealthCheck();
   const connected = health.data?.status === 'ok' || !health.isError;
-  const titles: Record<string, string> = { '/': 'Market desk', '/portfolio': 'Portfolio', '/advisor': 'AI advisor', '/settings': 'Preferences' };
+  const titles: Record<string, string> = { '/': 'Market desk', '/portfolio': 'Portfolio', '/advisor': 'AI advisor', '/bot-signals': 'Bot signals', '/settings': 'Preferences' };
   return <header className="glass-header sticky top-0 z-30 flex h-[68px] items-center justify-between border-b border-[hsl(var(--border))] px-4 backdrop-blur-md md:px-8">
     <div className="flex items-center gap-3"><Button variant="quiet" className="h-9 w-9 md:hidden" onClick={onMenu} data-testid="button-open-menu"><Menu size={18} /></Button><div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-[hsl(var(--muted-foreground))]">TradePro / <span className="text-[hsl(var(--foreground))]">{titles[location] || 'Terminal'}</span></p><h1 className="mt-0.5 font-mono text-sm font-medium text-[hsl(var(--foreground))] md:text-base">BTC weekly options</h1></div></div>
     <div className="flex items-center gap-2 md:gap-4">
@@ -184,6 +186,7 @@ function Sidebar({ open, close }: { open: boolean; close: () => void }) {
     { href: '/', label: 'Market desk', icon: LayoutGrid },
     { href: '/portfolio', label: 'Portfolio', icon: BriefcaseBusiness },
     { href: '/advisor', label: 'AI advisor', icon: Bot },
+    { href: '/bot-signals', label: 'Bot signals', icon: Radio },
     { href: '/settings', label: 'Settings', icon: Settings2 },
   ];
   return <><aside className={cx('fixed inset-y-0 left-0 z-40 flex w-[252px] flex-col bg-[hsl(var(--sidebar))] px-4 py-5 text-[hsl(var(--sidebar-foreground))] transition-transform md:relative md:z-0 md:translate-x-0', open ? 'translate-x-0' : '-translate-x-full')}>
@@ -201,6 +204,7 @@ function BottomNav() {
     { href: '/', label: 'Market', icon: LayoutGrid },
     { href: '/portfolio', label: 'Book', icon: BriefcaseBusiness },
     { href: '/advisor', label: 'Advisor', icon: Bot },
+    { href: '/bot-signals', label: 'Bot', icon: Radio },
     { href: '/settings', label: 'Control', icon: Settings2 },
   ];
   return <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-[hsl(var(--border))] bg-[hsl(var(--card)/.96)] px-2 pb-[max(.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl md:hidden" aria-label="Primary navigation">
@@ -336,12 +340,13 @@ function HomePage({ isPaper }: { isPaper: boolean }) {
   const market = marketQuery.data || fallbackMarket;
   const rows = chainQuery.data?.length ? chainQuery.data : fallbackChain;
   const marketLive = useMarketLive(market, rows);
+  const converted = useCurrencyConverter(marketLive.market, marketLive.chain);
   const requestedStrike = Number(new URLSearchParams(window.location.search).get('strike'));
   const [selectedId, setSelectedId] = useState(requestedStrike ? String(requestedStrike) : '98000');
   const [orderRow, setOrderRow] = useState<OptionChainRow>();
   const selected = rows.find(row => row.id === selectedId) || rows[4];
-  const liveSpot = marketLive.market.spotPrice;
-  const liveRows = marketLive.chain;
+  const liveSpot = converted.market.spotPrice;
+  const liveRows = converted.chain;
   const liveSelected = liveRows.find(row => row.id === selectedId) || liveRows.find(row => row.strike === requestedStrike) || liveRows[2];
    return <div className="space-y-7"><div className="flex flex-col justify-between gap-3 md:flex-row md:items-end"><div><div className="flex flex-wrap items-center gap-2"><Badge tone={isPaper ? 'amber' : 'red'}>{isPaper ? 'Paper environment' : 'Live environment'}</Badge><span className="text-[10px] font-semibold text-[hsl(var(--muted-foreground))]">Updated {timeAgo(marketLive.market.lastUpdated)}</span><Badge tone={marketLive.status === 'live' ? 'green' : marketLive.status === 'reconnecting' ? 'amber' : 'red'}>{marketLive.status === 'live' ? 'WebSocket live' : marketLive.status}</Badge></div><h2 className="mt-3 max-w-2xl text-2xl font-extrabold tracking-[-.04em] text-[hsl(var(--foreground))]">Read the tape.<br /><span className="text-[hsl(var(--muted-foreground))]">Make the trade with a plan.</span></h2></div><div className="flex items-center gap-2"><Button variant="outline" className="h-9 px-3" onClick={() => { queryClient.invalidateQueries({ queryKey: getGetMarketOverviewQueryKey() }); queryClient.invalidateQueries({ queryKey: getGetOptionChainQueryKey({ symbol: 'BTCUSDT' }) }); }} data-testid="button-refresh-market"><RefreshCw size={14} className={marketQuery.isFetching || chainQuery.isFetching ? 'animate-spin' : ''} /> Refresh</Button><Button className="h-9 px-3" disabled={!isPaper} onClick={() => setOrderRow(liveSelected)} data-testid="button-open-order"><Plus size={15} /> {isPaper ? 'New paper order' : 'Paper orders locked'}</Button></div></div>{(marketQuery.isLoading || chainQuery.isLoading) && <div className="flex items-center gap-2 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))]" data-testid="status-market-loading"><span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-[hsl(var(--accent))]" /> Connecting to market snapshot…</div>}
     <MarketStats market={{ ...market, spotPrice: liveSpot }} />
@@ -632,9 +637,15 @@ function SettingsPageV3({ isPaper, setIsPaper }: { isPaper: boolean; setIsPaper:
   </div>;
 }
 
+function BotSignalsPage() {
+  const [, navigate] = useRouterLocation();
+  const configQuery = useGetTradingConfig();
+  return <BotSignalsTab currencyRate={configQuery.data?.currencyRate ?? 0} onOpenSettings={() => navigate('/settings')} />;
+}
+
 function Router({ isPaper, setIsPaper }: { isPaper: boolean; setIsPaper: (v: boolean) => void }) {
   const [location] = useRouterLocation();
-  return <ErrorBoundary resetKey={location}><Shell isPaper={isPaper} setIsPaper={setIsPaper}><Switch><Route path="/" component={() => <HomePage isPaper={isPaper} />} /><Route path="/portfolio" component={() => <PortfolioPage isPaper={isPaper} />} /><Route path="/advisor" component={AdvisorPage} /><Route path="/settings" component={() => <SettingsPageV3 isPaper={isPaper} setIsPaper={setIsPaper} />} /><Route component={NotFound} /></Switch></Shell></ErrorBoundary>;
+  return <ErrorBoundary resetKey={location}><Shell isPaper={isPaper} setIsPaper={setIsPaper}><Switch><Route path="/" component={() => <HomePage isPaper={isPaper} />} /><Route path="/portfolio" component={() => <PortfolioPage isPaper={isPaper} />} /><Route path="/advisor" component={AdvisorPage} /><Route path="/bot-signals" component={BotSignalsPage} /><Route path="/settings" component={() => <SettingsPageV3 isPaper={isPaper} setIsPaper={setIsPaper} />} /><Route component={NotFound} /></Switch></Shell></ErrorBoundary>;
 }
 
 function App() {
