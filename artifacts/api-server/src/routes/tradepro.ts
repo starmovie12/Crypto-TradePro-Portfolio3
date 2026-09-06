@@ -197,7 +197,15 @@ export function refreshPaperQuotes(chain = getOptionChain()) {
   // the fee rate first. Without this, a bracket firing after >5 minutes of
   // no API traffic hits calculateTradeCosts' stale-rate guard and throws
   // inside a bare setInterval callback, which crashes the whole process.
-  refreshFeeRate();
+  // refreshFeeRate is async (Section 5.3 will eventually back it with a real
+  // ccxt fetch), but this runs inside trading-websocket.ts's setInterval
+  // tick, which cannot itself be async without restructuring that loop. A
+  // fire-and-forget call is intentional here; a `.catch` keeps a future
+  // ccxt failure from becoming a silent unhandled rejection instead of a
+  // crash-with-a-message.
+  void refreshFeeRate().catch((error) => {
+    console.error("refreshFeeRate failed during paper-quote tick:", error);
+  });
   
   const settledPositions: Position[] = [];
   positions.forEach((position) => {
@@ -240,7 +248,7 @@ export function refreshPaperQuotes(chain = getOptionChain()) {
 
 router.get("/market/overview", async (_req, res) => {
   await refreshCurrencyRate();
-  refreshFeeRate();
+  await refreshFeeRate();
   const config = getTradingConfig();
   res.json(
     GetMarketOverviewResponse.parse(getMarketOverview(config.currencyRate)),
@@ -252,15 +260,15 @@ router.get("/market/option-chain", (req, res) => {
   res.json(GetOptionChainResponse.parse(getOptionChain(params.symbol ?? "BTCUSDT")));
 });
 
-router.get("/portfolio", (_req, res) => {
-  refreshFeeRate();
+router.get("/portfolio", async (_req, res) => {
+  await refreshFeeRate();
   refreshPaperQuotes();
   res.json(GetPortfolioResponse.parse(portfolioSnapshot()));
 });
 
-router.post("/portfolio/positions/:id/close", (req, res) => {
+router.post("/portfolio/positions/:id/close", async (req, res) => {
   refreshPaperQuotes();
-  refreshFeeRate();
+  await refreshFeeRate();
   const { id } = ClosePositionParams.parse(req.params);
   const position = positions.find((item) => item.id === id);
   if (!position) {
@@ -290,9 +298,9 @@ router.post("/portfolio/positions/:id/close", (req, res) => {
   );
 });
 
-router.post("/portfolio/close-all", (_req, res) => {
+router.post("/portfolio/close-all", async (_req, res) => {
   refreshPaperQuotes();
-  refreshFeeRate();
+  await refreshFeeRate();
   const now = new Date().toISOString();
   const closeFailures: Array<{ id: string; instrument: string; reason: string }> = [];
   
@@ -371,7 +379,7 @@ router.get("/advisor/recommendations", (_req, res) => {
   );
 });
 
-router.post("/orders/paper", (req, res) => {
+router.post("/orders/paper", async (req, res) => {
   const body = CreatePaperOrderBody.parse(req.body);
   const clientOrderId = req.get("Idempotency-Key") ?? body.clientOrderId;
   if (clientOrderId) {
@@ -385,7 +393,7 @@ router.post("/orders/paper", (req, res) => {
     res.status(400).json({ error: "Entry, quantity, target, and stop must be positive values" });
     return;
   }
-  refreshFeeRate();
+  await refreshFeeRate();
   const config = getTradingConfig();
   const orderCost = body.entryPrice * body.quantity * 100;
   const entryFee = orderCost * config.feeRate;
