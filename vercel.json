@@ -1,5 +1,6 @@
 {
   "version": 2,
+  "installCommand": "npm install -g pnpm@9 && pnpm install",
   "routes": [
     { "src": "/(.*)", "dest": "/index.html" }
   ]
