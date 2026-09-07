@@ -1,12 +1,13 @@
 {
   "version": 2,
-  "installCommand": "npm install -g pnpm@9 && pnpm install",
+  "installCommand": "corepack enable && corepack prepare pnpm@9.1.0 --activate && pnpm install",
   "buildCommand": "pnpm --filter @workspace/crypto-tradepro run build",
   "outputDirectory": "artifacts/crypto-tradepro/dist/public",
   "framework": null,
   "env": {
     "PORT": "3000",
-    "BASE_PATH": "/"
+    "BASE_PATH": "/",
+    "ENABLE_EXPERIMENTAL_COREPACK": "1"
   },
   "routes": [
     { "src": "/(.*)", "dest": "/index.html" }
